@@ -1,4 +1,4 @@
-name: CI
+Name: CI
 
 on:
   push:
@@ -106,23 +106,7 @@ jobs:
           cargo test -p wekit-zygisk --lib
           ./x i18n-check
 
-      - name: Decode keystore
-        if: github.event_name != 'pull_request'
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $RUNNER_TEMP/wekit-keystore.jks
-
-      - name: Build Release (Signed)
-        if: github.event_name != 'pull_request'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WEKIT_KEYSTORE_FILE: ${{ runner.temp }}/wekit-keystore.jks
-          WEKIT_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          WEKIT_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          WEKIT_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./x build --release
-
       - name: Build Release (Unsigned)
-        if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./x build --release
@@ -132,8 +116,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/apk
           for flavor in standard legacy; do
-            apk="app/build/outputs/apk/$flavor/release/app-$flavor-release.apk"
-            cp -v "$apk" dist/apk/
+            cp -v app/build/outputs/apk/$flavor/release/*.apk dist/apk/
           done
           echo "Collected APKs:"
           ls -1 dist/apk
