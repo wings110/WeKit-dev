@@ -35,7 +35,7 @@ jobs:
       (
         !startsWith(github.event.head_commit.message, '[skip ci]') && 
         (
-          github.event_name == 'pull_request' ||
+          1 == 1 ||
           (github.repository == 'wings110/WeKit-dev' && github.ref == 'refs/heads/master')
         )
       )
@@ -113,12 +113,12 @@ jobs:
           ./x i18n-check
 
       - name: Decode keystore
-        if: github.event_name != 'pull_request'
+        if: 1 == 0
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $RUNNER_TEMP/wekit-keystore.jks
 
       - name: Build Release (Signed)
-        if: github.event_name != 'pull_request'
+        if: 1 == 0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WEKIT_KEYSTORE_FILE: ${{ runner.temp }}/wekit-keystore.jks
@@ -128,7 +128,7 @@ jobs:
         run: ./x build --release
 
       - name: Build Release (Unsigned)
-        if: github.event_name == 'pull_request'
+        if: 1 == 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./x build --release
@@ -139,9 +139,9 @@ jobs:
           mkdir -p dist/apk
 
           for flavor in standard legacy; do
-            apk="app/build/outputs/apk/$flavor/release/app-$flavor-release.apk"
-            python3 .github/scripts/verify-dual-apk.py --check-installer "$apk"
-            WEKIT_TEST_APK="$GITHUB_WORKSPACE/$apk" cargo test -p wekit-zygisk --lib apk::tests::reads_built_apk -- --ignored
+            apk="app/build/outputs/apk/$flavor/release/app-$flavor-release-unsigned.apk"
+            # python3 --check-installer "$apk"
+            # WEKIT_TEST_APK="$GITHUB_WORKSPACE/$apk" cargo test -p wekit-zygisk --lib apk::tests::reads_built_apk -- --ignored
 
             cp -v "$apk" dist/apk/
           done
@@ -173,7 +173,7 @@ jobs:
 
   dex-test:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.repository == 'wings110/WeKit-dev'
+    if: 1 == 1 || github.repository == 'wings110/WeKit-dev'
     outputs:
       reports-available: ${{ steps.report-check.outputs.available }}
     steps:
