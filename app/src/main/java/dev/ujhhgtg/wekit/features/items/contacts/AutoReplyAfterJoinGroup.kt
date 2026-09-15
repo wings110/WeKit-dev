@@ -2,7 +2,9 @@ package dev.ujhhgtg.wekit.features.items.contacts
 
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.getValue
@@ -12,8 +14,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
 import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
@@ -186,7 +188,6 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
             val savedCount = WePrefs.getIntOrDef(KEY_REPLY_COUNT, DEFAULT_REPLY_COUNT)
                 .coerceIn(1, MAX_REPLY_COUNT)
 
-            // 条数输入框：草稿态，失焦时才应用到 items
             var countDraft by remember { mutableStateOf(savedCount.toString()) }
 
             var intervalInput by remember {
@@ -204,9 +205,9 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
                 }.toMutableStateList()
             }
 
-            // 把草稿的条数应用到 items，增删到目标数量
-            fun applyCount(raw: String) {
-                val target = raw.toIntOrNull()?.coerceIn(1, MAX_REPLY_COUNT) ?: return
+            // 根据草稿条数应用到 items：增加或删除输入框
+            fun applyCount() {
+                val target = countDraft.toIntOrNull()?.coerceIn(1, MAX_REPLY_COUNT) ?: return
                 countDraft = target.toString()
                 while (items.size < target) items.add("")
                 while (items.size > target) items.removeAt(items.size - 1)
@@ -216,24 +217,30 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
                 title = { Text(stringResource(R.string.feature_auto_reply_after_join_group_name)) },
                 text = {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        // 条数：失焦时生效
-                        TextField(
-                            value = countDraft,
-                            onValueChange = { input ->
-                                countDraft = input.filter { it.isDigit() }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .onFocusChanged { state ->
-                                    if (!state.isFocused) {
-                                        applyCount(countDraft)
-                                    }
+                        // 条数：输入框 + 确定按钮
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            TextField(
+                                value = countDraft,
+                                onValueChange = { input ->
+                                    countDraft = input.filter { it.isDigit() }
                                 },
-                            label = {
-                                Text(stringResource(R.string.auto_reply_after_join_group_count_label))
+                                modifier = Modifier.weight(1f),
+                                label = {
+                                    Text(stringResource(R.string.auto_reply_after_join_group_count_label))
+                                }
+                            )
+                            Button(
+                                onClick = { applyCount() },
+                                modifier = Modifier.padding(start = 8.dp)
+                            ) {
+                                Text(stringResource(R.string.dialog_confirm))
                             }
-                        )
+                        }
 
+                        // 每条内容输入框（数量由 countDraft 决定）
                         items.forEachIndexed { index, value ->
                             key(index) {
                                 TextField(
@@ -267,8 +274,8 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
                 },
                 confirmButton = {
                     Button(onClick = {
-                        // 保存前先应用一次条数（防止用户输入后没失焦就点确定）
-                        applyCount(countDraft)
+                        // 保存前兜底应用一次条数
+                        applyCount()
 
                         val intervalMs = intervalInput.toLongOrNull()
                             ?.coerceIn(0L, MAX_INTERVAL_MS) ?: return@Button
@@ -278,7 +285,6 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
                         WePrefs.putInt(KEY_REPLY_COUNT, finalCount)
                         WePrefs.putLong(KEY_SEND_INTERVAL_MS, intervalMs)
 
-                        // 只存非空项，空项存空字符串（保持序号语义）
                         items.forEachIndexed { index, text ->
                             WePrefs.putString(
                                 "$KEY_REPLY_ITEM_PREFIX$index",
@@ -308,7 +314,6 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
         val intervalMs = WePrefs.getLongOrDef(KEY_SEND_INTERVAL_MS, DEFAULT_INTERVAL_MS)
             .coerceIn(0L, MAX_INTERVAL_MS)
 
-        // 保留空行语义：按序号收集，空项跳过，但不会打乱后面项的对应关系
         val messages = (0 until count).mapNotNull { index ->
             WePrefs.getStringOrDef("$KEY_REPLY_ITEM_PREFIX$index", "")
                 .trim()
@@ -333,7 +338,7 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
                         "sent reply[$index/${messages.size - 1}] to room=$roomId " +
                             "key=$key ok=$sent content=${msg.take(30)}"
                     )
-                    // 第一条就失败，说明这个群当前不可发消息，直接中断
+                    // 第一条失败即中断
                     if (!sent && index == 0) {
                         WeLogger.w(TAG, "first reply failed, abort remaining for room=$roomId key=$key")
                         return@launch
