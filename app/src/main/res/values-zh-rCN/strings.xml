@@ -753,6 +753,9 @@
     <string name="feature_auto_add_nearby_friends_description">在附近的人菜单中添加菜单项, 可全自动向附近的人按模板发送消息 (没写完)</string>
     <string name="feature_auto_dnd_after_join_group_name">加入群聊自动免打扰</string>
     <string name="feature_auto_dnd_after_join_group_description">加入新的群聊后自动开启消息免打扰</string>
+    <string name="feature_auto_reply_after_join_group_name">加入群聊自动回复</string>
+    <string name="feature_auto_reply_after_join_group_description">加入新的群聊后自动发送自定义回复内容</string>
+    <string name="auto_reply_after_join_group_reply_text_label">回复内容</string>
     <string name="feature_auto_remark_new_friends_name">添加自动备注</string>
     <string name="feature_auto_remark_new_friends_description">添加好友时自动备注</string>
     <string name="feature_custom_local_friend_avatars_name">自定义好友本地头像</string>
