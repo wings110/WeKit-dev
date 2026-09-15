@@ -143,7 +143,7 @@ jobs:
             # python3 --check-installer "$apk"
             # WEKIT_TEST_APK="$GITHUB_WORKSPACE/$apk" cargo test -p wekit-zygisk --lib apk::tests::reads_built_apk -- --ignored
 
-            cp -v "$apk" dist/apk/
+            cp -v app/build/outputs/apk/$flavor/release/*.apk dist/apk/
           done
 
           echo "Collected APKs:"
