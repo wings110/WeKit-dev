@@ -790,6 +790,9 @@
     <string name="feature_auto_add_nearby_friends_description">Add a menu item to the nearby people menu to automatically send messages to nearby people according to the template (not finished yet)</string>
     <string name="feature_auto_dnd_after_join_group_name">Auto-mute newly joined groups</string>
     <string name="feature_auto_dnd_after_join_group_description">Automatically turn on Do Not Disturb messaging after joining a new group chat</string>
+    <string name="feature_auto_reply_after_join_group_name">Auto reply after joining group</string>
+    <string name="feature_auto_reply_after_join_group_description">Automatically send a custom reply after joining a new group chat</string>
+    <string name="auto_reply_after_join_group_reply_text_label">Reply content</string>
     <string name="feature_auto_remark_new_friends_name">Automatically remark new contacts</string>
     <string name="feature_auto_remark_new_friends_description">Automatic notes when adding friends</string>
     <string name="feature_custom_local_friend_avatars_name">Custom local contact avatars</string>
