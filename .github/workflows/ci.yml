@@ -25,18 +25,18 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write # 修改为 write 以便 GITHUB_TOKEN 可以自动创建 Release
 
 jobs:
   build:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'workflow_dispatch' && github.repository == 'wings110/WeKit-dev') ||
+      (github.event_name == 'workflow_dispatch') ||
       (
         !startsWith(github.event.head_commit.message, '[skip ci]') && 
         (
-          1 == 1 ||
-          (github.repository == 'wings110/WeKit-dev' && github.ref == 'refs/heads/master')
+          github.event_name == 'pull_request' ||
+          github.ref == 'refs/heads/master'
         )
       )
     steps:
@@ -112,23 +112,9 @@ jobs:
           cargo test -p wekit-zygisk --lib
           ./x i18n-check
 
-      - name: Decode keystore
-        if: 1 == 0
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $RUNNER_TEMP/wekit-keystore.jks
-
-      - name: Build Release (Signed)
-        if: 1 == 0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WEKIT_KEYSTORE_FILE: ${{ runner.temp }}/wekit-keystore.jks
-          WEKIT_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          WEKIT_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          WEKIT_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./x build --release
-
+      # 修改点：移除了原有的 Decode keystore 和 Build Release (Signed)
+      # 无论 PR 还是 Push 都只构建未签名版本
       - name: Build Release (Unsigned)
-        if: 1 == 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./x build --release
@@ -139,11 +125,11 @@ jobs:
           mkdir -p dist/apk
 
           for flavor in standard legacy; do
-            apk="app/build/outputs/apk/$flavor/release/app-$flavor-release-unsigned.apk"
-            # python3 --check-installer "$apk"
-            # WEKIT_TEST_APK="$GITHUB_WORKSPACE/$apk" cargo test -p wekit-zygisk --lib apk::tests::reads_built_apk -- --ignored
+            apk="app/build/outputs/apk/$flavor/release/app-$flavor-release.apk"
+            python3 .github/scripts/verify-dual-apk.py --check-installer "$apk"
+            WEKIT_TEST_APK="$GITHUB_WORKSPACE/$apk" cargo test -p wekit-zygisk --lib apk::tests::reads_built_apk -- --ignored
 
-            cp -v app/build/outputs/apk/$flavor/release/*.apk dist/apk/
+            cp -v "$apk" dist/apk/
           done
 
           echo "Collected APKs:"
@@ -173,7 +159,7 @@ jobs:
 
   dex-test:
     runs-on: ubuntu-latest
-    if: 1 == 1 || github.repository == 'wings110/WeKit-dev'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     outputs:
       reports-available: ${{ steps.report-check.outputs.available }}
     steps:
@@ -312,7 +298,7 @@ jobs:
   release-dex-test:
     needs: dex-test
     runs-on: ubuntu-latest
-    if: ${{ always() && github.repository == 'wings110/WeKit-dev' && github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.dex-test.outputs.reports-available == 'true' }}
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.dex-test.outputs.reports-available == 'true' }}
     permissions:
       contents: write
     steps:
@@ -349,16 +335,16 @@ jobs:
       - name: Create or update Dex Test release
         if: steps.stage.outputs.has-assets == 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view Dex-Test --repo Ujhhgtg/WeKit >/dev/null 2>&1; then
-            gh release edit Dex-Test --repo Ujhhgtg/WeKit \
+          if gh release view Dex-Test --repo ${{ github.repository }} >/dev/null 2>&1; then
+            gh release edit Dex-Test --repo ${{ github.repository }} \
               --title "Dex Test" \
               --prerelease \
               --notes-file dist/dex-test-release/release-notes.md
           else
             gh release create Dex-Test \
-              --repo Ujhhgtg/WeKit \
+              --repo ${{ github.repository }} \
               --title "Dex Test" \
               --prerelease \
               --notes-file dist/dex-test-release/release-notes.md
@@ -368,11 +354,11 @@ jobs:
           while IFS= read -r asset; do
             [[ -n "$asset" ]] && upload+=("dist/dex-test-release/$asset")
           done < dist/dex-test-release/assets.txt
-          gh release upload Dex-Test --repo Ujhhgtg/WeKit "${upload[@]}" --clobber
+          gh release upload Dex-Test --repo ${{ github.repository }} "${upload[@]}" --clobber
 
   extensions-changes:
     runs-on: ubuntu-latest
-    if: github.repository == 'wings110/WeKit-dev' && github.event_name == 'push'
+    if: github.event_name == 'push'
     outputs:
       changed: ${{ steps.filter.outputs.extensions }}
     steps:
@@ -406,7 +392,6 @@ jobs:
   build-extensions:
     needs: extensions-changes
     runs-on: ubuntu-latest
-    # This dedicated publishing job is the only path that downloads the Arch rootfs.
     if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.publish_extensions) || needs.extensions-changes.outputs.changed == 'true' || needs.extensions-changes.result == 'failure') }}
     concurrency:
       group: extensions-release
@@ -446,21 +431,16 @@ jobs:
           enable-cache: false
 
       - name: Install system dependencies
-        # glslc compiles the llama.cpp Vulkan shaders for the llama-native pack.
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-multilib glslc
 
       - name: Free disk space and report
-        # This job is much heavier than a plain APK build (cold PRoot build,
-        # Chaquopy runtime, native packs), and the hosted runner has died
-        # silently mid-"Build packs"; keep as much headroom as possible.
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
             "$AGENT_TOOLSDIRECTORY/Python" || true
           sudo docker image prune -af >/dev/null 2>&1 || true
           sudo apt-get clean
-          # Headroom against OOM during the llama.cpp/native compile bursts.
           sudo fallocate -l 6G /mnt/swapfile || true
           sudo chmod 600 /mnt/swapfile || true
           sudo mkswap /mnt/swapfile >/dev/null 2>&1 || true
@@ -535,9 +515,6 @@ jobs:
           cargo xtask build --native-only --abi arm64-v8a
 
       - name: Save PRoot build
-        # Save explicitly and early: the hosted runner has died silently
-        # during "Pack extensions", and the post-save of actions/cache never
-        # ran then, leaving every retry with a ~30 min cold PRoot build.
         if: always() && steps.native_build.outcome == 'success'
         uses: actions/cache/save@v6
         with:
@@ -550,7 +527,7 @@ jobs:
       - name: Skip if assets already published
         id: published
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           current_assets=$(
             for f in dist/extensions/*; do
@@ -558,7 +535,7 @@ jobs:
             done | sort
           )
           published_assets=$(
-            gh api "repos/Ujhhgtg/WeKit/releases/tags/Extensions" \
+            gh api "repos/${{ github.repository }}/releases/tags/Extensions" \
               --jq '.assets[] | [.name, .digest] | @tsv' 2>/dev/null | sort || true
           )
           if [[ "$current_assets" == "$published_assets" ]]; then
@@ -571,11 +548,11 @@ jobs:
       - name: Create Extensions release if missing
         if: steps.published.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh release view Extensions --repo Ujhhgtg/WeKit >/dev/null 2>&1; then
+          if ! gh release view Extensions --repo ${{ github.repository }} >/dev/null 2>&1; then
             gh release create Extensions \
-              --repo Ujhhgtg/WeKit \
+              --repo ${{ github.repository }} \
               --title "Extensions" \
               --prerelease \
               --notes "扩展包资产。manifest.json 为最新版本索引, 本体按索引下载并校验 SHA-256。"
@@ -584,7 +561,7 @@ jobs:
       - name: Upload pack assets
         if: steps.published.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           shopt -s nullglob
           pack_assets=()
@@ -592,20 +569,20 @@ jobs:
             [[ "$asset" == dist/extensions/manifest.json ]] || pack_assets+=("$asset")
           done
           (( ${#pack_assets[@]} > 0 ))
-          gh release upload Extensions --repo Ujhhgtg/WeKit \
+          gh release upload Extensions --repo ${{ github.repository }} \
             "${pack_assets[@]}" \
             --clobber
-          gh release upload Extensions --repo Ujhhgtg/WeKit dist/extensions/manifest.json --clobber
+          gh release upload Extensions --repo ${{ github.repository }} dist/extensions/manifest.json --clobber
 
       - name: Remove stale pack assets
         if: steps.published.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           shopt -s nullglob
           current_files=(dist/extensions/*)
           (( ${#current_files[@]} > 0 ))
-          published_assets=$(gh release view Extensions --repo Ujhhgtg/WeKit --json assets --jq '.assets[].name')
+          published_assets=$(gh release view Extensions --repo ${{ github.repository }} --json assets --jq '.assets[].name')
 
           while IFS= read -r published_asset; do
             [[ -z "$published_asset" ]] && continue
@@ -617,14 +594,14 @@ jobs:
               fi
             done
             if [[ "$keep" == false ]]; then
-              gh release delete-asset Extensions --repo Ujhhgtg/WeKit "$published_asset" --yes
+              gh release delete-asset Extensions --repo ${{ github.repository }} "$published_asset" --yes
             fi
           done <<< "$published_assets"
 
   release-ci:
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ always() && needs.build.result == 'success' && github.repository == 'wings110/WeKit-dev' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    if: ${{ always() && needs.build.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     permissions:
       contents: write
 
@@ -643,10 +620,10 @@ jobs:
 
       - name: Delete existing CI release (if exists)
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete CI --repo Ujhhgtg/WeKit --yes || true
-          gh api -X DELETE repos/Ujhhgtg/WeKit/git/refs/tags/CI || true
+          gh release delete CI --repo ${{ github.repository }} --yes || true
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/CI || true
 
       - name: Generate update.json
         run: |
@@ -666,7 +643,7 @@ jobs:
 
       - name: Create CI release on WeKit and upload artifacts
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ github.sha }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
@@ -682,95 +659,7 @@ jobs:
           } > "$RUNNER_TEMP/ci-notes.md"
 
           gh release create CI \
-            --repo Ujhhgtg/WeKit \
+            --repo ${{ github.repository }} \
             --title "CI" \
             --notes-file "$RUNNER_TEMP/ci-notes.md" \
             artifacts/*
-
-  upload-telegram:
-    needs: build
-    runs-on: ubuntu-latest
-    if: ${{ always() && needs.build.result == 'success' && github.repository == 'wings110/WeKit-dev' && github.event_name == 'workflow_dispatch' }}
-    services:
-      telegram-bot-api:
-        image: aiogram/telegram-bot-api:latest
-        env:
-          TELEGRAM_API_ID: "21724"
-          TELEGRAM_API_HASH: "3e0cb5efcd52300aec5994fdfc5bdc16"
-          TELEGRAM_STATISTICS: 1
-        ports:
-          - 8081:8081
-
-    steps:
-      - name: Download APK artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: wekit-apk
-          path: artifacts
-
-      - name: Wait for Telegram API
-        run: |
-          until curl -s http://localhost:8081 > /dev/null; do
-          echo "Waiting for Telegram API server..."
-          sleep 1
-          done
-
-      - name: Send build artifacts via Telegram API
-        env:
-          BOT_TOKEN:         ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID:           ${{ secrets.TELEGRAM_CHAT_ID }}
-          MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
-          SHA:               ${{ github.sha }}
-          COMMIT_AUTHOR:     ${{ github.event.head_commit.author.name || github.actor }}
-          COMMIT_MESSAGE:    ${{ github.event.head_commit.message || 'Manual Build' }}
-          REPO:              ${{ github.repository }}
-        run: |
-          caption="🎉 *检测到新的 GitHub 推送！*
-          *Commit SHA:* \`${SHA}\`
-          \`\`\`
-          ${COMMIT_MESSAGE}
-          \`\`\`
-          *提交者* \`${COMMIT_AUTHOR}\`
-          [查看详情](https://github.com/${REPO}/commit/${SHA})"
-          
-          shopt -s nullglob
-          artifacts=(artifacts/*.apk)
-          
-          echo "${artifacts[@]}"
-          
-          if [ ${#artifacts[@]} -eq 0 ]; then
-            echo "No build artifacts found"
-            exit 1
-          elif [ ${#artifacts[@]} -eq 1 ]; then
-            # Single APK — use sendDocument (supports caption)
-            curl -s -X POST "http://localhost:8081/bot${BOT_TOKEN}/sendDocument" \
-              -F chat_id="${CHAT_ID}" \
-              -F document=@"${artifacts[0]}" \
-              -F caption="${caption}" \
-              -F parse_mode=Markdown
-          else
-            media_json="["
-            form_args=()
-            for i in "${!artifacts[@]}"; do
-              artifact="${artifacts[$i]}"
-              name="artifact${i}"
-              form_args+=(-F "${name}=@${artifact}")
-          
-              if [ $i -gt 0 ]; then media_json+=","; fi
-          
-              if [ $i -eq $(( ${#artifacts[@]} - 1 )) ]; then
-                media_json+="{\"type\":\"document\",\"media\":\"attach://${name}\",\"caption\":\"${caption}\",\"parse_mode\":\"Markdown\"}"
-              else
-                media_json+="{\"type\":\"document\",\"media\":\"attach://${name}\"}"
-              fi
-            done
-            media_json+="]"
-          
-            echo $media_json
-          
-            curl -s -X POST "http://localhost:8081/bot${BOT_TOKEN}/sendMediaGroup" \
-              -F chat_id="${CHAT_ID}" \
-              -F message_thread_id="${MESSAGE_THREAD_ID}" \
-              -F media="${media_json}" \
-              "${form_args[@]}"
-          fi
