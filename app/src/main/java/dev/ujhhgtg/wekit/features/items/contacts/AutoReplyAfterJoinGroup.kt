@@ -1,14 +1,18 @@
 package dev.ujhhgtg.wekit.features.items.contacts
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
 import dev.ujhhgtg.wekit.R
 import dev.ujhhgtg.wekit.dexkit.abc.IResolveDex
@@ -34,6 +38,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.luckypray.dexkit.DexKitBridge
 import java.util.IdentityHashMap
@@ -47,14 +52,21 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
     override val categoryIds = listOf(FeatureCategoryIds.CONTACTS_GROUPS)
     override val descriptionRes = R.string.feature_auto_reply_after_join_group_description
 
-    // 默认开启，进群时立即生效，和"自动免打扰"行为一致；用户可在设置页关闭
     override val defaultEnabled: Boolean = true
 
     private const val TAG = "AutoReplyAfterJoinGroup"
     private const val MAX_SNAPSHOTS = 128
     private const val MAX_DEDUP_KEYS = 256
-    private const val KEY_REPLY_TEXT = "auto_reply_after_join_group_text"
-    private const val DEFAULT_REPLY_TEXT = "大家好，我是新来的，请多关照～"
+
+    private const val KEY_REPLY_COUNT = "auto_reply_after_join_group_count"
+    private const val KEY_REPLY_ITEM_PREFIX = "auto_reply_after_join_group_item_"
+    private const val KEY_SEND_INTERVAL_MS = "auto_reply_after_join_group_interval_ms"
+
+    private const val DEFAULT_REPLY_COUNT = 1
+    private const val MAX_REPLY_COUNT = 20
+    private const val DEFAULT_INTERVAL_MS = 100L
+    private const val MAX_INTERVAL_MS = 60_000L
+    private const val MAX_MESSAGE_LENGTH = 4_000
 
     private val methodSyncChatroomMembers by dexMethod()
     private val stateLock = Any()
@@ -155,7 +167,7 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
 
                 if (!shouldMuteJoinedGroup(oldState, newState, snapshot.selfWxId)) return
 
-                submitReply(snapshot.roomId, newState, snapshot.selfWxId)
+                submitReplies(snapshot.roomId, newState, snapshot.selfWxId)
             }
         }))
     }
@@ -171,41 +183,142 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
 
     override fun onClick(context: ComponentActivity) {
         showComposeDialog(context) {
-            var textInput by remember {
-                mutableStateOf(WePrefs.getStringOrDef(KEY_REPLY_TEXT, DEFAULT_REPLY_TEXT))
+            val savedCount = WePrefs.getIntOrDef(KEY_REPLY_COUNT, DEFAULT_REPLY_COUNT)
+                .coerceIn(1, MAX_REPLY_COUNT)
+
+            // 条数输入框：草稿态，失焦时才应用到 items
+            var countDraft by remember { mutableStateOf(savedCount.toString()) }
+
+            var intervalInput by remember {
+                mutableStateOf(
+                    WePrefs.getLongOrDef(KEY_SEND_INTERVAL_MS, DEFAULT_INTERVAL_MS).toString()
+                )
             }
+
+            val items = remember {
+                List(savedCount) { index ->
+                    WePrefs.getStringOrDef(
+                        "$KEY_REPLY_ITEM_PREFIX$index",
+                        if (index == 0) "大家好，我是新来的，请多关照～" else ""
+                    )
+                }.toMutableStateList()
+            }
+
+            // 把草稿的条数应用到 items，增删到目标数量
+            fun applyCount(raw: String) {
+                val target = raw.toIntOrNull()?.coerceIn(1, MAX_REPLY_COUNT) ?: return
+                countDraft = target.toString()
+                while (items.size < target) items.add("")
+                while (items.size > target) items.removeAt(items.size - 1)
+            }
+
             AlertDialogContent(
                 title = { Text(stringResource(R.string.feature_auto_reply_after_join_group_name)) },
                 text = {
-                    TextField(
-                        value = textInput,
-                        onValueChange = { textInput = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = {
-                            Text(stringResource(R.string.auto_reply_after_join_group_reply_text_label))
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        // 条数：失焦时生效
+                        TextField(
+                            value = countDraft,
+                            onValueChange = { input ->
+                                countDraft = input.filter { it.isDigit() }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { state ->
+                                    if (!state.isFocused) {
+                                        applyCount(countDraft)
+                                    }
+                                },
+                            label = {
+                                Text(stringResource(R.string.auto_reply_after_join_group_count_label))
+                            }
+                        )
+
+                        items.forEachIndexed { index, value ->
+                            key(index) {
+                                TextField(
+                                    value = value,
+                                    onValueChange = { items[index] = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = {
+                                        Text(
+                                            stringResource(
+                                                R.string.auto_reply_after_join_group_item_label,
+                                                index + 1
+                                            )
+                                        )
+                                    }
+                                )
+                            }
                         }
-                    )
+
+                        TextField(
+                            value = intervalInput,
+                            onValueChange = { intervalInput = it.filter { c -> c.isDigit() } },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text(stringResource(R.string.auto_reply_after_join_group_interval_label))
+                            }
+                        )
+                    }
                 },
                 dismissButton = {
                     TextButton(onDismiss) { Text(stringResource(R.string.dialog_cancel)) }
                 },
                 confirmButton = {
                     Button(onClick = {
-                        WePrefs.putString(KEY_REPLY_TEXT, textInput)
+                        // 保存前先应用一次条数（防止用户输入后没失焦就点确定）
+                        applyCount(countDraft)
+
+                        val intervalMs = intervalInput.toLongOrNull()
+                            ?.coerceIn(0L, MAX_INTERVAL_MS) ?: return@Button
+
+                        val finalCount = items.size.coerceIn(1, MAX_REPLY_COUNT)
+
+                        WePrefs.putInt(KEY_REPLY_COUNT, finalCount)
+                        WePrefs.putLong(KEY_SEND_INTERVAL_MS, intervalMs)
+
+                        // 只存非空项，空项存空字符串（保持序号语义）
+                        items.forEachIndexed { index, text ->
+                            WePrefs.putString(
+                                "$KEY_REPLY_ITEM_PREFIX$index",
+                                text.trim().take(MAX_MESSAGE_LENGTH)
+                            )
+                        }
+                        // 清理多余旧 key
+                        for (i in finalCount until MAX_REPLY_COUNT) {
+                            WePrefs.remove("$KEY_REPLY_ITEM_PREFIX$i")
+                        }
+
                         onDismiss()
                     }) { Text(stringResource(R.string.dialog_confirm)) }
                 })
         }
     }
 
-    private fun submitReply(roomId: String, state: WeChatroomSyncState, selfWxId: String) {
+    private fun submitReplies(roomId: String, state: WeChatroomSyncState, selfWxId: String) {
         val key = dedupKey(state)
         if (!markDedupKey(key)) {
             WeLogger.d(TAG, "skip duplicate reply room=$roomId key=$key version=${state.memberVersion}")
             return
         }
 
-        val replyText = WePrefs.getStringOrDef(KEY_REPLY_TEXT, DEFAULT_REPLY_TEXT)
+        val count = WePrefs.getIntOrDef(KEY_REPLY_COUNT, DEFAULT_REPLY_COUNT)
+            .coerceIn(1, MAX_REPLY_COUNT)
+        val intervalMs = WePrefs.getLongOrDef(KEY_SEND_INTERVAL_MS, DEFAULT_INTERVAL_MS)
+            .coerceIn(0L, MAX_INTERVAL_MS)
+
+        // 保留空行语义：按序号收集，空项跳过，但不会打乱后面项的对应关系
+        val messages = (0 until count).mapNotNull { index ->
+            WePrefs.getStringOrDef("$KEY_REPLY_ITEM_PREFIX$index", "")
+                .trim()
+                .takeIf { it.isNotEmpty() }
+        }
+
+        if (messages.isEmpty()) {
+            WeLogger.w(TAG, "no valid reply messages configured, skip room=$roomId")
+            return
+        }
 
         scope.launch {
             try {
@@ -213,14 +326,25 @@ object AutoReplyAfterJoinGroup : ClickableFeature(), IResolveDex {
                     WeLogger.d(TAG, "skip stale reply room=$roomId key=$key")
                     return@launch
                 }
-                val sent = WeMessageApi.sendText(roomId, replyText)
-                if (sent) {
-                    WeLogger.i(TAG, "sent reply to room=$roomId key=$key version=${state.memberVersion}")
-                } else {
-                    WeLogger.w(TAG, "reply send returned false room=$roomId key=$key")
+                messages.forEachIndexed { index, msg ->
+                    val sent = WeMessageApi.sendText(roomId, msg)
+                    WeLogger.i(
+                        TAG,
+                        "sent reply[$index/${messages.size - 1}] to room=$roomId " +
+                            "key=$key ok=$sent content=${msg.take(30)}"
+                    )
+                    // 第一条就失败，说明这个群当前不可发消息，直接中断
+                    if (!sent && index == 0) {
+                        WeLogger.w(TAG, "first reply failed, abort remaining for room=$roomId key=$key")
+                        return@launch
+                    }
+                    if (index < messages.size - 1 && intervalMs > 0L) {
+                        delay(intervalMs)
+                    }
                 }
+                WeLogger.i(TAG, "all replies sent to room=$roomId key=$key count=${messages.size}")
             } catch (e: Exception) {
-                WeLogger.w(TAG, "reply submission failed room=$roomId key=$key version=${state.memberVersion}", e)
+                WeLogger.w(TAG, "reply submission failed room=$roomId key=$key", e)
             }
         }
     }
