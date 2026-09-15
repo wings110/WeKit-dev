@@ -6,6 +6,7 @@ import dev.ujhhgtg.wekit.dexkit.dsl.dexMethod
 import dev.ujhhgtg.wekit.features.api.core.WeApi
 import dev.ujhhgtg.wekit.features.api.core.WeConversationApi
 import dev.ujhhgtg.wekit.features.api.core.WeDatabaseApi
+import dev.ujhhgtg.wekit.features.api.core.WeMessageApi
 import dev.ujhhgtg.wekit.features.api.core.models.ChatroomSyncStateReadResult
 import dev.ujhhgtg.wekit.features.api.core.models.WeChatroomSyncState
 import dev.ujhhgtg.wekit.features.core.FeatureCategoryIds
@@ -35,6 +36,9 @@ object AutoDndAfterJoinGroup : SwitchFeature(), IResolveDex {
     private const val TAG = "AutoDndAfterJoinGroup"
     private const val MAX_SNAPSHOTS = 128
     private const val MAX_DEDUP_KEYS = 256
+
+    // === 欢迎语配置（改这里即可） ===
+    private const val WELCOME_MESSAGE = "大家好，我是新来123，请多关照～"
 
     private val methodSyncChatroomMembers by dexMethod()
     private val stateLock = Any()
@@ -152,24 +156,31 @@ object AutoDndAfterJoinGroup : SwitchFeature(), IResolveDex {
     private fun submitDnd(roomId: String, state: WeChatroomSyncState, selfWxId: String) {
         val key = dedupKey(state)
         if (!markDedupKey(key)) {
-            WeLogger.d(TAG, "skip duplicate DND room=$roomId key=$key version=${state.memberVersion}")
+            WeLogger.d(TAG, "skip duplicate room=$roomId key=$key version=${state.memberVersion}")
             return
         }
 
         scope.launch {
             try {
                 if (WeApi.selfWxId != selfWxId) {
-                    WeLogger.d(TAG, "skip stale DND room=$roomId key=$key")
+                    WeLogger.d(TAG, "skip stale welcome room=$roomId key=$key")
                     return@launch
                 }
-                if (WeConversationApi.isDnd(roomId)) {
-                    WeLogger.d(TAG, "skip already-muted room=$roomId key=$key version=${state.memberVersion}")
-                    return@launch
+
+                // === 修改点：把自己进群后的动作改成发送欢迎语 ===
+                // 原来的逻辑是：WeConversationApi.setDnd(roomId, true)
+                // 现在改成发送文本消息
+                val sent = WeMessageApi.sendText(roomId, WELCOME_MESSAGE)
+                if (sent) {
+                    WeLogger.i(TAG, "sent welcome to room=$roomId key=$key version=${state.memberVersion}")
+                } else {
+                    WeLogger.w(TAG, "welcome send returned false room=$roomId key=$key")
                 }
-                WeConversationApi.setDnd(roomId, true)
-                WeLogger.i(TAG, "submitted DND room=$roomId key=$key version=${state.memberVersion}")
+
+                // 如果你还想要原来的“自动免打扰”，取消下面这行的注释即可两个都执行：
+                // WeConversationApi.setDnd(roomId, true)
             } catch (e: Exception) {
-                WeLogger.w(TAG, "DND submission failed room=$roomId key=$key version=${state.memberVersion}", e)
+                WeLogger.w(TAG, "welcome submission failed room=$roomId key=$key version=${state.memberVersion}", e)
             }
         }
     }
